@@ -1,16 +1,20 @@
 import { chromium } from 'playwright';
 import { readFileSync } from 'node:fs';
 import { classifyUrl, classifyText } from './session.js';
+import { ACTIONS } from './linkedin.js';
 
 const API_URL = process.env.API_URL || 'http://app:3000';
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN;
 const PROFILE_DIR = process.env.PROFILE_DIR || '/data/profile';
-const HEARTBEAT_MS = 60_000;
-const START_URL = process.env.START_URL || 'https://www.linkedin.com/feed/';
+const LOOP_SPEED = Number(process.env.LOOP_SPEED || 1); // tests set this low
+const HEARTBEAT_MS = 60_000 * LOOP_SPEED;
+const BASE = (process.env.LINKEDIN_BASE || 'https://www.linkedin.com').replace(/\/$/, '');
+const START_URL = process.env.START_URL || `${BASE}/feed/`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms * LOOP_SPEED));
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version;
 
 let state = { session: 'unknown', detail: null, url: null };
-let paused = true; // read by the action loop from phase 2 on; starts paused
+let paused = true;
 
 async function api(path, body) {
   try {
@@ -36,7 +40,7 @@ async function heartbeat() {
 // Reads the page that is open right now and reports any change at once.
 async function inspect(page, context) {
   const url = page.url();
-  let session = classifyUrl(url);
+  let session = classifyUrl(url, new URL(BASE).host);
   let detail = null;
 
   const text = await page.locator('body').innerText({ timeout: 5_000 }).catch(() => '');
@@ -44,7 +48,7 @@ async function inspect(page, context) {
   if (warning) ({ state: session, detail } = warning);
 
   if (session === 'ok' || session === 'unknown') {
-    const cookies = await context.cookies('https://www.linkedin.com');
+    const cookies = await context.cookies(BASE);
     if (!cookies.some((c) => c.name === 'li_at')) {
       session = 'logged_out';
       detail = 'No LinkedIn login cookie';
@@ -65,7 +69,7 @@ async function main() {
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     channel: process.env.CHROME_PATH ? undefined : 'chrome',
     executablePath: process.env.CHROME_PATH || undefined, // for local testing only
-    headless: false,
+    headless: process.env.HEADLESS === '1', // tests only; on the NAS Chrome runs headed under Xvfb
     viewport: null,
     locale: process.env.BROWSER_LOCALE || 'en-US',
     timezoneId: process.env.TZ || 'Asia/Karachi',
@@ -95,11 +99,38 @@ async function main() {
   }
   await inspect(page, context);
 
+  setInterval(() => {
+    inspecting = inspecting.then(() => inspect(page, context)).then(heartbeat).catch((e) => console.error(e.message));
+  }, HEARTBEAT_MS);
+
+  // Work loop: ask the dashboard what to do next; it applies every safety rule
+  // and answers with either one action or how long to wait.
   for (;;) {
-    await new Promise((r) => setTimeout(r, HEARTBEAT_MS));
-    inspecting = inspecting.then(() => inspect(page, context));
     await inspecting;
-    await heartbeat();
+    if (paused || state.session !== 'ok') {
+      await sleep(30_000);
+      continue;
+    }
+    const plan = await api('/api/runner/next', {});
+    if (!plan || plan.wait) {
+      await sleep(Math.min(plan?.wait ?? 60, 60) * 1000);
+      continue;
+    }
+    const { id, type, payload } = plan.action;
+    const run = ACTIONS[type];
+    let outcome;
+    if (!run) outcome = { result: 'not_started', detail: `Unknown action ${type}` };
+    else {
+      console.log(`action ${id}: ${type}${payload.dryRun ? ' (dry run)' : ''}`);
+      try {
+        outcome = await run(page, payload);
+      } catch (err) {
+        outcome = { result: 'failed', detail: err.message.split('\n')[0].slice(0, 300) };
+      }
+    }
+    console.log(`action ${id}: ${outcome.result}${outcome.detail ? ` (${outcome.detail})` : ''}`);
+    await api('/api/runner/result', { id, ...outcome });
+    inspecting = inspecting.then(() => inspect(page, context));
   }
 }
 
