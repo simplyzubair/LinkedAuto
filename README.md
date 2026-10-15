@@ -2,6 +2,8 @@
 
 A private LinkedIn outreach tool for one person's own leads. It runs at home on a Synology NAS, so LinkedIn always sees your home IP, and it puts safety first: it starts paused, and any logout, security check or restriction notice pauses everything until you resume it by hand.
 
+Quick start guide for first-time users: [docs/LinkedAuto-Quick-Start-Guide.pdf](docs/LinkedAuto-Quick-Start-Guide.pdf)
+
 Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702-4ec1e7ac5757
 
 ## What it does
