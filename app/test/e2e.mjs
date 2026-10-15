@@ -145,10 +145,12 @@ try {
   assert.equal((await lead('hank-h')).status, 'visited');
 
   // The dashboard pages render with real data.
-  for (const path of ['/', '/leads', '/leads?status=replied', '/leads.csv', '/campaigns', '/campaigns/1', '/campaigns/new', '/settings', '/log']) {
+  for (const path of ['/', '/leads', '/leads?status=replied', '/leads/add', '/leads.csv', '/campaigns', '/campaigns/1', '/campaigns/new', '/settings', '/log', '/log?type=sync', '/log?lead=1', '/log?view=events', '/browser', '/help', '/assets/text.js']) {
     const res = await fetch(APP + path);
     assert.equal(res.status, 200, path);
   }
+  // The browser view follows the host the dashboard was opened on.
+  assert.match(await (await fetch(APP + '/browser')).text(), /src="http:\/\/127\.0\.0\.1:6080\/vnc\.html\?autoconnect=1/);
   const csv = await (await fetch(APP + '/leads.csv')).text();
   assert.match(csv, /alice-a.*Alice Anders.*replied/);
 
@@ -157,6 +159,11 @@ try {
   await sql`UPDATE runner_status SET session = 'ok'`;
   const hb = await fetch(APP + '/api/runner/heartbeat', { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ session: 'checkpoint', detail: 'unusual activity' }) });
   assert.equal((await hb.json()).paused, true);
+  const home = await (await fetch(APP + '/')).text();
+  assert.match(home, /LinkedIn warning: Security check\. Everything is paused\./);
+  const refused = await fetch(APP + '/resume', { method: 'POST', redirect: 'manual' });
+  assert.match(refused.headers.get('location'), /err=/, 'start refused while LinkedIn shows a warning');
+  assert.equal((await sql`SELECT value FROM settings WHERE key = 'paused'`)[0].value, true);
 
   const counts = await sql`SELECT type, result, count(*)::int AS n FROM actions GROUP BY 1, 2 ORDER BY 1, 2`;
   console.log('Actions run:', counts.map((c) => `${c.type}/${c.result}=${c.n}`).join(', '));

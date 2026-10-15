@@ -1,8 +1,9 @@
 import Fastify from 'fastify';
 import formbody from '@fastify/formbody';
 import { timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { sql, migrate, getSetting, setSetting, logEvent } from './db.js';
-import { overviewPage, leadsPage, campaignsPage, campaignForm, settingsPage, logPage } from './views.js';
+import { overviewPage, leadsPage, addLeadsPage, campaignsPage, campaignForm, settingsPage, logPage, browserPage, helpPage } from './views.js';
 import { loadSettings, nextAction, usage, acceptanceStats, TIME_ZONE } from './planner.js';
 import { finishAction } from './results.js';
 import { effectiveLimits } from './governor.js';
@@ -98,43 +99,82 @@ app.post('/api/runner/result', async (req) => {
 // ---------- Dashboard ----------
 
 const html = (reply, page) => reply.type('text/html').send(page);
+const go = (reply, path, msg, kind = 'msg') => reply.redirect(msg ? `${path}${path.includes('?') ? '&' : '?'}${kind}=${encodeURIComponent(msg)}` : path);
+
+// Back to the dashboard page a form was posted from (path only, never another site).
+function backTo(req, fallback) {
+  try {
+    const u = new URL(req.headers.referer);
+    return u.pathname.startsWith('/') && !u.pathname.startsWith('//') ? u.pathname + u.search.replace(/[?&](msg|err)=[^&]*/g, '').replace(/^&/, '?') : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+// What every page needs for the side bar and the safety banners.
+async function shellFor(req) {
+  const [status] = await sql`SELECT * FROM runner_status WHERE id = 1`;
+  return { status, settings: await loadSettings(), flash: req.query.msg || '', error: req.query.err || '' };
+}
+
+// The browser view runs on the runner's noVNC port. Unless a public address is
+// set (Cloudflare Tunnel), use the host this dashboard was opened on, so the
+// link works on the home network and over Tailscale alike.
+function novncUrlFor(req) {
+  if (process.env.NOVNC_PUBLIC_URL) return process.env.NOVNC_PUBLIC_URL;
+  const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+  return `${proto}://${req.hostname}:${process.env.NOVNC_PORT || 6080}/vnc.html`;
+}
+
+// The template helpers, shared with the browser for live previews.
+const TEXT_JS = readFileSync(new URL('./text.js', import.meta.url), 'utf8');
+app.get('/assets/text.js', async (req, reply) => reply.type('text/javascript').header('cache-control', 'no-cache').send(TEXT_JS));
 
 app.get('/', async (req, reply) => {
-  const settings = await loadSettings();
-  const [status] = await sql`SELECT * FROM runner_status WHERE id = 1`;
+  const shell = await shellFor(req);
+  const { settings } = shell;
   const events = await sql`SELECT * FROM events ORDER BY at DESC LIMIT 25`;
   const acceptance = await acceptanceStats();
   const counts = Object.fromEntries((await sql`SELECT status, count(*)::int AS n FROM leads GROUP BY status`).map((r) => [r.status, r.n]));
   const [replies] = await sql`
     SELECT count(*) FILTER (WHERE msg_step > 0)::int AS messaged, count(replied_at)::int AS replied
     FROM leads WHERE coalesce(last_message_at, replied_at) > now() - interval '30 days'`;
+  const [funnel] = await sql`
+    SELECT count(*)::int AS leads, count(invited_at)::int AS invited, count(accepted_at)::int AS accepted,
+      count(*) FILTER (WHERE msg_step > 0)::int AS messaged, count(replied_at)::int AS replied
+    FROM leads`;
+  const [campaigns] = await sql`SELECT count(*)::int AS total, count(*) FILTER (WHERE active)::int AS active FROM campaigns`;
+  const [{ started }] = await sql`SELECT EXISTS (SELECT 1 FROM events WHERE kind = 'resumed') AS started`;
   html(reply, overviewPage({
-    status, events, settings, counts,
+    events, counts, funnel, campaigns, started,
+    leadsTotal: funnel.leads,
     limits: effectiveLimits(settings, new Date(), acceptance),
     usage: await usage(),
     plan: settings.paused ? null : lastPlan,
     stats: { ...acceptance, ...replies },
-    novncUrl: process.env.NOVNC_PUBLIC_URL || '',
-  }));
+  }, shell));
 });
+
+app.get('/browser', async (req, reply) => html(reply, browserPage({ novncUrl: novncUrlFor(req) }, await shellFor(req))));
+app.get('/help', async (req, reply) => html(reply, helpPage(await shellFor(req))));
 
 app.post('/pause', async (req, reply) => {
   await setSetting('paused', true);
   await logEvent('dashboard', 'paused');
-  reply.redirect('/');
+  go(reply, backTo(req, '/'), 'Paused. Nothing happens on LinkedIn until you press Start.');
 });
 
 app.post('/resume', async (req, reply) => {
   const [status] = await sql`SELECT session FROM runner_status WHERE id = 1`;
   if (STOP_STATES.has(status.session)) {
     await logEvent('dashboard', 'resume-refused', `LinkedIn session is ${status.session}; fix it in the browser view first`);
-    return reply.redirect('/');
+    return go(reply, '/', 'LinkedIn still shows a warning. Fix it in the browser view first, then press Start.', 'err');
   }
   const s = await loadSettings();
   if (s.warmup.enabled && !s.warmup.start_date) await setSetting('warmup', { ...s.warmup, start_date: new Date().toISOString().slice(0, 10) });
   await setSetting('paused', false);
   await logEvent('dashboard', 'resumed');
-  reply.redirect('/');
+  go(reply, '/', s.dry_run ? 'Started in practice mode. Nothing will be sent.' : 'Started live.');
 });
 
 function leadFilter(q) {
@@ -156,8 +196,14 @@ app.get('/leads', async (req, reply) => {
     WHERE ${where} ORDER BY l.updated_at DESC LIMIT 200`;
   const [{ total }] = await sql`SELECT count(*)::int AS total FROM leads l WHERE ${where}`;
   const campaigns = await sql`SELECT id, name FROM campaigns ORDER BY id DESC`;
+  const counts = Object.fromEntries((await sql`SELECT status, count(*)::int AS n FROM leads GROUP BY status`).map((r) => [r.status, r.n]));
+  html(reply, leadsPage({ leads, total, filter, campaigns, counts }, await shellFor(req)));
+});
+
+app.get('/leads/add', async (req, reply) => {
+  const campaigns = await sql`SELECT id, name, active FROM campaigns ORDER BY active DESC, id DESC`;
   const imports = await sql`SELECT * FROM imports ORDER BY id DESC LIMIT 10`;
-  html(reply, leadsPage({ leads, total, filter, campaigns, imports, message: req.query.msg }));
+  html(reply, addLeadsPage({ campaigns, imports }, await shellFor(req)));
 });
 
 app.get('/leads.csv', async (req, reply) => {
@@ -177,11 +223,11 @@ const campaignIdOf = (v) => (v ? Number(v) : null);
 
 app.post('/imports', async (req, reply) => {
   const { search_url, campaign_id, max_pages, tags } = req.body || {};
-  if (!isLinkedInSearchUrl(search_url)) return reply.redirect('/leads?msg=' + encodeURIComponent('That is not a LinkedIn people search URL.'));
+  if (!isLinkedInSearchUrl(search_url)) return go(reply, '/leads/add', 'That is not a LinkedIn people-search link. It should start with https://www.linkedin.com/search/results/people/', 'err');
   const pages = Math.min(10, Math.max(1, Number(max_pages) || 3));
   await sql`INSERT INTO imports (search_url, campaign_id, max_pages, tags) VALUES (${search_url.trim()}, ${campaignIdOf(campaign_id)}, ${pages}, ${tagsOf(tags)})`;
   await logEvent('dashboard', 'import-queued', search_url);
-  reply.redirect('/leads?msg=' + encodeURIComponent('Import queued. The runner reads one page per action while automation is running.'));
+  go(reply, '/leads/add', 'Import queued. The runner reads one page per action while automation is started.');
 });
 
 app.post('/leads/csv', async (req, reply) => {
@@ -190,7 +236,7 @@ app.post('/leads/csv', async (req, reply) => {
   try {
     leads = leadsFromCsv(csv || '');
   } catch (err) {
-    return reply.redirect('/leads?msg=' + encodeURIComponent(err.message));
+    return go(reply, '/leads/add', err.message, 'err');
   }
   let added = 0;
   for (const l of leads) {
@@ -201,12 +247,12 @@ app.post('/leads/csv', async (req, reply) => {
     added += rows.length;
   }
   await logEvent('dashboard', 'csv-import', `${added} new of ${leads.length}`);
-  reply.redirect('/leads?msg=' + encodeURIComponent(`Imported ${added} new leads (${leads.length - added} were already here).`));
+  go(reply, '/leads', `Imported ${added} new leads (${leads.length - added} were already here).`);
 });
 
 app.post('/leads/:id/stop', async (req, reply) => {
   await sql`UPDATE leads SET status = 'stopped', updated_at = now() WHERE id = ${Number(req.params.id)}`;
-  reply.redirect(req.headers.referer || '/leads');
+  go(reply, backTo(req, '/leads'), 'Stopped. LinkedAuto will not contact this lead again.');
 });
 
 app.get('/campaigns', async (req, reply) => {
@@ -214,10 +260,10 @@ app.get('/campaigns', async (req, reply) => {
     SELECT c.*, count(l.id)::int AS leads, count(l.invited_at)::int AS invited, count(l.accepted_at)::int AS accepted,
       count(*) FILTER (WHERE l.msg_step > 0)::int AS messaged, count(l.replied_at)::int AS replied
     FROM campaigns c LEFT JOIN leads l ON l.campaign_id = c.id GROUP BY c.id ORDER BY c.id DESC`;
-  html(reply, campaignsPage({ campaigns }));
+  html(reply, campaignsPage({ campaigns }, await shellFor(req)));
 });
 
-app.get('/campaigns/new', async (req, reply) => html(reply, campaignForm({ sample: SAMPLE_LEAD })));
+app.get('/campaigns/new', async (req, reply) => html(reply, campaignForm({ sample: SAMPLE_LEAD }, await shellFor(req))));
 
 app.get('/campaigns/:id', async (req, reply) => {
   const [campaign] = await sql`SELECT * FROM campaigns WHERE id = ${Number(req.params.id)}`;
@@ -230,7 +276,7 @@ app.get('/campaigns/:id', async (req, reply) => {
       SELECT 'First message' AS kind, message_variant AS variant, count(*)::int AS sent, count(replied_at)::int AS replied
       FROM leads WHERE campaign_id = ${campaign.id} AND message_variant IS NOT NULL GROUP BY message_variant ORDER BY 2`),
   ];
-  html(reply, campaignForm({ campaign, variantStats, sample: SAMPLE_LEAD }));
+  html(reply, campaignForm({ campaign, variantStats, sample: SAMPLE_LEAD }, await shellFor(req)));
 });
 
 function campaignFields(b) {
@@ -248,25 +294,25 @@ function campaignFields(b) {
 
 app.post('/campaigns', async (req, reply) => {
   const [c] = await sql`INSERT INTO campaigns ${sql(campaignFields(req.body || {}))} RETURNING id`;
-  reply.redirect(`/campaigns/${c.id}`);
+  go(reply, `/campaigns/${c.id}`, 'Campaign created. Turn it on when you are ready.');
 });
 
 app.post('/campaigns/:id', async (req, reply) => {
   await sql`UPDATE campaigns SET ${sql(campaignFields(req.body || {}))} WHERE id = ${Number(req.params.id)}`;
-  reply.redirect(`/campaigns/${req.params.id}`);
+  go(reply, `/campaigns/${req.params.id}`, 'Campaign saved.');
 });
 
 for (const op of ['start', 'stop']) {
   app.post(`/campaigns/:id/${op}`, async (req, reply) => {
     await sql`UPDATE campaigns SET active = ${op === 'start'} WHERE id = ${Number(req.params.id)}`;
     await logEvent('dashboard', `campaign-${op}`, req.params.id);
-    reply.redirect('/campaigns');
+    go(reply, backTo(req, '/campaigns'), op === 'start' ? 'Campaign turned on.' : 'Campaign turned off. Its leads are left alone.');
   });
 }
 
 app.get('/settings', async (req, reply) => {
-  const settings = await loadSettings();
-  html(reply, settingsPage({ settings, limits: effectiveLimits(settings, new Date(), await acceptanceStats()), timeZone: TIME_ZONE }));
+  const shell = await shellFor(req);
+  html(reply, settingsPage({ limits: effectiveLimits(shell.settings, new Date(), await acceptanceStats()), timeZone: TIME_ZONE }, shell));
 });
 
 app.post('/settings', async (req, reply) => {
@@ -294,22 +340,29 @@ app.post('/settings', async (req, reply) => {
   const minGap = n(b.min_gap_s, 20, 600, 45);
   await setSetting('pacing', { ...s.pacing, min_gap_s: minGap, max_gap_s: Math.max(minGap + 10, n(b.max_gap_s, 30, 1200, 150)), burst: n(b.burst, 2, 20, 5) });
   await setSetting('warmup', { enabled: b.warmup_enabled === 'on', start_date: /^\d{4}-\d{2}-\d{2}$/.test(b.warmup_start || '') ? b.warmup_start : s.warmup.start_date });
-  await logEvent('dashboard', 'settings-saved', b.dry_run === 'on' ? 'dry run on' : 'dry run off');
-  reply.redirect('/settings');
+  await logEvent('dashboard', 'settings-saved', b.dry_run === 'on' ? 'practice mode on' : 'practice mode off');
+  go(reply, '/settings', b.dry_run === 'on' ? 'Settings saved.' : 'Settings saved. Practice mode is off: LinkedAuto sends for real when started.');
 });
 
 app.post('/settings/recover', async (req, reply) => {
   await setSetting('cap_factor', 1);
   await setSetting('invites_paused_until', null);
   await logEvent('dashboard', 'caps-restored');
-  reply.redirect('/settings');
+  go(reply, '/settings', 'Limits restored to 100%.');
 });
 
 app.get('/log', async (req, reply) => {
-  const actions = await sql`
+  const filter = { view: req.query.view || '', type: req.query.type || '', lead: req.query.lead || '' };
+  const where = [sql`true`];
+  if (filter.type === 'sync') where.push(sql`a.type LIKE 'sync%'`);
+  else if (filter.type) where.push(sql`a.type = ${filter.type}`);
+  if (Number(filter.lead)) where.push(sql`a.lead_id = ${Number(filter.lead)}`);
+  const actions = filter.view === 'events' ? [] : await sql`
     SELECT a.*, l.full_name, l.profile_url FROM actions a LEFT JOIN leads l ON l.id = a.lead_id
-    ORDER BY a.at DESC LIMIT 200`;
-  html(reply, logPage({ actions }));
+    WHERE ${where.reduce((x, y) => sql`${x} AND ${y}`)} ORDER BY a.at DESC LIMIT 200`;
+  const events = filter.view === 'events' ? await sql`SELECT * FROM events ORDER BY at DESC LIMIT 200` : [];
+  const [lead] = Number(filter.lead) ? await sql`SELECT id, full_name, profile_url FROM leads WHERE id = ${Number(filter.lead)}` : [];
+  html(reply, logPage({ actions, events, filter, lead }, await shellFor(req)));
 });
 
 // Alert once when the runner stops checking in for 10 minutes.

@@ -2,6 +2,8 @@
 
 A private LinkedIn outreach tool for one person's own leads. It runs at home on a Synology NAS, so LinkedIn always sees your home IP, and it puts safety first: it starts paused, and any logout, security check or restriction notice pauses everything until you resume it by hand.
 
+Quick start guide for first-time users: [docs/LinkedAuto-Quick-Start-Guide.pdf](docs/LinkedAuto-Quick-Start-Guide.pdf)
+
 Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702-4ec1e7ac5757
 
 ## What it does
@@ -12,7 +14,7 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
 | Campaign | Visit the profile, invite a few hours later with an optional note, send the first message once they accept, then up to three follow-ups N days apart. |
 | Stop rules | The sequence stops the moment a lead replies (checked in the inbox and in the thread before every follow-up). Invitations still pending after 21 days are withdrawn. |
 | Templates | `{{firstName}}`, `{{company|your team}}` and friends; put `---` between versions to A/B test notes and first messages. |
-| Dashboard | Overview with limits and results, leads with filters and CSV export, campaigns with A/B results, settings, and a log of every action. |
+| Dashboard | Home with a get-started checklist, status, limits and a results funnel; leads with stage filters, per-lead history and CSV export; a campaign editor with live previews and A/B results; the browser view built in; settings; a log of every action; and a How it works page. |
 
 | Part | Tech |
 | --- | --- |
@@ -22,7 +24,7 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
 
 ## Safety rules built in
 
-- **Starts paused and in dry run.** Dry run goes through every step but never presses Connect, Send or Withdraw.
+- **Starts paused and in dry run** (called practice mode in the dashboard). Dry run goes through every step but never presses Connect, Send or Withdraw.
 - **Limits** (defaults, editable): 80 invitations a week, 15 a day, 25 messages a day, 80 LinkedIn page views a day.
 - **Warm-up:** 30%, 50%, 75%, then 100% of those limits over four weeks from the first resume.
 - **Adaptive:** acceptance under 30% cuts volume by 20%, under 20% by 40% (once 20 invitations have settled).
@@ -82,14 +84,16 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
 
 6. **Log in to LinkedIn by hand.** Open `http://<nas-ip>:6080/vnc.html`, click Connect, enter the VNC password, and log in to LinkedIn in the Chrome window, including any 2-step code. LinkedIn may email you about a new sign-in; that is expected once.
 
-7. **Open the dashboard** at `http://<nas-ip>:3080`. If `DASHBOARD_PASSWORD` is set, the browser asks for a login: any username works with that password. Within a minute it should show the runner online and "Logged in to LinkedIn". Automation stays paused.
+7. **Open the dashboard** at `http://<nas-ip>:3080`. If `DASHBOARD_PASSWORD` is set, the browser asks for a login: any username works with that password. Within a minute it should show the runner online and LinkedIn logged in. Automation stays paused. The **Browser view** page shows the Chrome window from step 6 inside the dashboard; it uses the address you opened the dashboard on with port `NOVNC_PORT`, unless `NOVNC_PUBLIC_URL` is set.
 
 ## First run
 
-1. **Campaigns > New campaign.** Write the invitation note, first message and follow-ups; previews show the length and how fields fill in. Turn the campaign on.
-2. **Leads.** Paste a LinkedIn search URL into "Import from a LinkedIn search" and pick the campaign, or import a CSV.
-3. **Resume** on the Overview with dry run still on. Open the browser view and watch a few actions; the Log page shows what each one would have sent.
-4. When it looks right, untick **Dry run** in Settings. Real sending starts at the warm-up level.
+The Home page walks you through these as a checklist.
+
+1. **Campaigns > New campaign.** Write the invitation note, first message and follow-ups; previews update as you type and show the length and how fields fill in. Turn the campaign on.
+2. **Leads > Add leads.** Paste a LinkedIn search URL and pick the campaign, or import a CSV.
+3. **Start** on Home with practice mode still on. Open the browser view and watch a few actions; the Activity log shows what each one would have sent.
+4. When it looks right, turn off **Practice mode** in Settings. Real sending starts at the warm-up level.
 
 Optional: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (in Infisical) to get a message on replies, auto-pauses, LinkedIn's limit and the runner going offline.
 
