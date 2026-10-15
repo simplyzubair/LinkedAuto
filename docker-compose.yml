@@ -1,0 +1,64 @@
+# LinkedAuto on a Synology NAS (Container Manager > Project), or any Docker host.
+# Data lives in ./data next to this file.
+name: linkedauto
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: linkedauto
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: linkedauto
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U linkedauto"]
+      interval: 10s
+      retries: 10
+    mem_limit: 256m
+
+  app:
+    build: ./app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://linkedauto:${POSTGRES_PASSWORD}@db:5432/linkedauto
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?set RUNNER_TOKEN in .env}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      NOVNC_PUBLIC_URL: ${NOVNC_PUBLIC_URL:-}
+      TZ: ${TZ:-Asia/Karachi}
+    ports:
+      - "${DASHBOARD_PORT:-3080}:3000"
+    mem_limit: 256m
+
+  runner:
+    build: ./runner
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      API_URL: http://app:3000
+      RUNNER_TOKEN: ${RUNNER_TOKEN}
+      VNC_PASSWORD: ${VNC_PASSWORD:?set VNC_PASSWORD in .env}
+      TZ: ${TZ:-Asia/Karachi}
+      BROWSER_LOCALE: ${BROWSER_LOCALE:-en-US}
+    volumes:
+      - ./data/chrome-profile:/data/profile
+    ports:
+      - "${NOVNC_PORT:-6080}:6080"
+    shm_size: 1gb
+    mem_limit: 1536m
+
+  # Optional: reach the dashboard from outside your home through Cloudflare,
+  # with no open ports. Start with: docker compose --profile tunnel up -d
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
+    mem_limit: 128m
