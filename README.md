@@ -52,18 +52,15 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
      backups/          nightly database dumps, 14 days kept; sync this off-site
    ```
 
+   The DS723+ has no git or SFTP, so download the code as a tarball (use `main`, or a branch name):
+
    ```sh
    ssh nas            # or ssh nas-ts over Tailscale
    cd /volume1/docker/linkedauto
-   git clone https://github.com/simplyzubair/LinkedAuto.git app   # needs the Git package; or upload a ZIP from GitHub
+   mkdir -p app && curl -sL https://codeload.github.com/simplyzubair/LinkedAuto/tar.gz/refs/heads/main | tar xz --strip-components=1 -C app
    ```
 
-   The runner runs as uid 1000 and must be able to write to `browser-profile/`. Check first; change ownership only if this fails:
-
-   ```sh
-   docker run --rm -u 1000:1000 -v "$PWD/browser-profile:/p" alpine touch /p/.write-test && rm browser-profile/.write-test && echo writable
-   # only if that failed:  sudo chown -R 1000:1000 browser-profile
-   ```
+   To update later, run the same `curl` line again, then rebuild (step 5).
 
 4. **Settings and secrets.** Put the non-secret settings in `config/linkedauto.env`:
 
@@ -73,7 +70,7 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
 
    Keep these secrets in Infisical (generate each with `openssl rand -hex 24`; VNC uses only the first 8 characters of its password): `POSTGRES_PASSWORD`, `RUNNER_TOKEN`, `VNC_PASSWORD`, and optionally `DASHBOARD_PASSWORD` and `CF_TUNNEL_TOKEN`.
 
-5. **Start it.** The first build downloads Chrome and takes several minutes.
+5. **Start it.** The first build downloads Chrome and can take 20 minutes or more on the NAS.
 
    ```sh
    cd /volume1/docker/linkedauto/app
@@ -85,7 +82,7 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
 
 6. **Log in to LinkedIn by hand.** Open `http://<nas-ip>:6080/vnc.html`, click Connect, enter the VNC password, and log in to LinkedIn in the Chrome window, including any 2-step code. LinkedIn may email you about a new sign-in; that is expected once.
 
-7. **Open the dashboard** at `http://<nas-ip>:3080`. Within a minute it should show the runner online and "Logged in to LinkedIn". Automation stays paused.
+7. **Open the dashboard** at `http://<nas-ip>:3080`. If `DASHBOARD_PASSWORD` is set, the browser asks for a login: any username works with that password. Within a minute it should show the runner online and "Logged in to LinkedIn". Automation stays paused.
 
 ## First run
 
