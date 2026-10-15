@@ -33,7 +33,7 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
 
 ## Set up on the NAS (DS723+)
 
-1. **Check memory.** The DS723+ ships with 2 GB; Chrome alone is capped at 1.5 GB here, so 8 GB or more is strongly recommended.
+1. **Check memory.** The DS723+ ships with 2 GB; Chrome alone is capped at 1.5 GB here, so 8 GB or more is strongly recommended (ours has 32 GB).
 
    ```sh
    ssh nas 'uname -m; free -m'
@@ -56,7 +56,13 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
    ssh nas            # or ssh nas-ts over Tailscale
    cd /volume1/docker/linkedauto
    git clone https://github.com/simplyzubair/LinkedAuto.git app   # needs the Git package; or upload a ZIP from GitHub
-   sudo chown -R 1000:1000 browser-profile   # the runner runs as uid 1000
+   ```
+
+   The runner runs as uid 1000 and must be able to write to `browser-profile/`. Check first; change ownership only if this fails:
+
+   ```sh
+   docker run --rm -u 1000:1000 -v "$PWD/browser-profile:/p" alpine touch /p/.write-test && rm browser-profile/.write-test && echo writable
+   # only if that failed:  sudo chown -R 1000:1000 browser-profile
    ```
 
 4. **Settings and secrets.** Put the non-secret settings in `config/linkedauto.env`:
@@ -71,11 +77,11 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
 
    ```sh
    cd /volume1/docker/linkedauto/app
-   infisical run -- sudo -E docker compose --env-file ../config/linkedauto.env up -d --build
-   sudo docker compose ps
+   docker compose --env-file ../config/linkedauto.env --env-file ../config/secrets.env up -d --build
+   docker compose ps
    ```
 
-   Without Infisical, copy `.env.example` to `.env`, fill in the secrets there, and run `sudo docker compose up -d --build`. Older DSM builds use `docker-compose` instead of `docker compose`.
+   `config/secrets.env` holds the secrets exported from Infisical (the NAS has no Infisical CLI): export the `prod` environment of the "linkedauto" project as a dotenv file, save it there, and run `chmod 600 ../config/secrets.env`. If the Infisical CLI is installed, `infisical run -- docker compose --env-file ../config/linkedauto.env up -d --build` works instead. Prefix commands with `sudo` only if your user is not in the `docker` group. Older DSM builds use `docker-compose` instead of `docker compose`.
 
 6. **Log in to LinkedIn by hand.** Open `http://<nas-ip>:6080/vnc.html`, click Connect, enter the VNC password, and log in to LinkedIn in the Chrome window, including any 2-step code. LinkedIn may email you about a new sign-in; that is expected once.
 
@@ -100,7 +106,7 @@ Use a Cloudflare Tunnel so no ports are opened on your router.
 4. Set `NOVNC_PUBLIC_URL=https://browser.<your-domain>/vnc.html` in `config/linkedauto.env`, then:
 
    ```sh
-   infisical run -- sudo -E docker compose --env-file ../config/linkedauto.env --profile tunnel up -d
+   docker compose --env-file ../config/linkedauto.env --env-file ../config/secrets.env --profile tunnel up -d
    ```
 
 ## Develop and test
