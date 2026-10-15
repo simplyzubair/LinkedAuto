@@ -1,5 +1,6 @@
 # LinkedAuto on a Synology NAS (Container Manager > Project), or any Docker host.
-# Data lives in ./data next to this file.
+# Data folders default to ./data; on the NAS point them at /volume1/docker/linkedauto/
+# (see README). Secrets come from the environment: a .env file or `infisical run --`.
 name: linkedauto
 
 services:
@@ -11,7 +12,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: linkedauto
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ${DB_DIR:-./data/db}:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U linkedauto"]
       interval: 10s
@@ -46,11 +47,33 @@ services:
       TZ: ${TZ:-Asia/Karachi}
       BROWSER_LOCALE: ${BROWSER_LOCALE:-en-US}
     volumes:
-      - ./data/chrome-profile:/data/profile
+      - ${BROWSER_PROFILE_DIR:-./data/browser-profile}:/data/profile
     ports:
       - "${NOVNC_PORT:-6080}:6080"
     shm_size: 1gb
     mem_limit: 1536m
+
+  # Nightly database dump, keeping 14 days. On the NAS this folder syncs off-site.
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${BACKUP_DIR:-./data/backups}:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          pg_dump -h db -U linkedauto -Fc linkedauto > /backups/linkedauto-$$(date +%F).dump.tmp \
+            && mv /backups/linkedauto-$$(date +%F).dump.tmp /backups/linkedauto-$$(date +%F).dump
+          find /backups -name 'linkedauto-*.dump' -mtime +14 -delete
+          sleep 86400
+        done
+    mem_limit: 128m
 
   # Optional: reach the dashboard from outside your home through Cloudflare,
   # with no open ports. Start with: docker compose --profile tunnel up -d

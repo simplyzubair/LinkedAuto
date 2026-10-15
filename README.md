@@ -10,7 +10,7 @@ Research and build plan: https://claude.ai/code/artifact/03bc7a9e-b4a6-46a7-a702
 | --- | --- |
 | `app/` | Dashboard and API (Node, Fastify, Postgres). Shows whether the runner is online, the LinkedIn session state, a pause switch and an activity log. |
 | `runner/` | A real Google Chrome in a virtual screen, driven by Playwright with a persistent profile. You see and use it through noVNC to log in by hand. It reads whatever page is open and reports the session state; it only visits LinkedIn once, at start-up. |
-| `docker-compose.yml` | Postgres, app, runner, and an optional Cloudflare Tunnel. |
+| `docker-compose.yml` | Postgres, app, runner, nightly backups, and an optional Cloudflare Tunnel. |
 
 Outreach (visits, invites, messages) comes in later phases. Nothing in phase 0 acts on LinkedIn by itself.
 
@@ -24,32 +24,41 @@ Outreach (visits, invites, messages) comes in later phases. Nothing in phase 0 a
 
 2. **Install Container Manager** from Package Center (DSM 7.2 or later).
 
-3. **Get the code** onto the NAS, for example into `/volume1/docker/linkedauto`:
+3. **Get the code** into the project folder. The NAS layout is:
 
-   ```sh
-   ssh nas
-   cd /volume1/docker
-   git clone https://github.com/simplyzubair/LinkedAuto.git linkedauto   # needs the Git package; or upload a ZIP from GitHub
-   cd linkedauto
+   ```
+   /volume1/docker/linkedauto/
+     app/              this repo
+     db/               Postgres data
+     browser-profile/  Chrome profile (your LinkedIn login lives here)
+     config/           non-secret settings (linkedauto.env)
+     backups/          nightly database dumps, 14 days kept; sync this off-site
    ```
 
-4. **Create `.env`** from the example and fill in the secrets:
+   ```sh
+   ssh nas            # or ssh nas-ts over Tailscale
+   cd /volume1/docker/linkedauto
+   git clone https://github.com/simplyzubair/LinkedAuto.git app   # needs the Git package; or upload a ZIP from GitHub
+   sudo chown -R 1000:1000 browser-profile   # the runner runs as uid 1000
+   ```
+
+4. **Settings and secrets.** Put the non-secret settings in `config/linkedauto.env`:
 
    ```sh
-   cp .env.example .env
-   for v in POSTGRES_PASSWORD RUNNER_TOKEN; do sed -i "s|^$v=.*|$v=$(openssl rand -hex 24)|" .env; done
-   sed -i "s|^VNC_PASSWORD=.*|VNC_PASSWORD=$(openssl rand -hex 4)|" .env
-   cat .env   # note the VNC_PASSWORD
+   grep -E '^(TZ|BROWSER_LOCALE|DASHBOARD_PORT|NOVNC_PORT|NOVNC_PUBLIC_URL|DB_DIR|BROWSER_PROFILE_DIR|BACKUP_DIR)=' app/.env.example > config/linkedauto.env
    ```
+
+   Keep these secrets in Infisical (generate each with `openssl rand -hex 24`; VNC uses only the first 8 characters of its password): `POSTGRES_PASSWORD`, `RUNNER_TOKEN`, `VNC_PASSWORD`, and optionally `DASHBOARD_PASSWORD` and `CF_TUNNEL_TOKEN`.
 
 5. **Start it.** The first build downloads Chrome and takes several minutes.
 
    ```sh
-   sudo docker compose up -d --build
+   cd /volume1/docker/linkedauto/app
+   infisical run -- sudo -E docker compose --env-file ../config/linkedauto.env up -d --build
    sudo docker compose ps
    ```
 
-   (Older DSM builds use `docker-compose` instead of `docker compose`. You can also create the project in Container Manager > Project, pointing at this folder.)
+   Without Infisical, copy `.env.example` to `.env`, fill in the secrets there, and run `sudo docker compose up -d --build`. Older DSM builds use `docker-compose` instead of `docker compose`.
 
 6. **Log in to LinkedIn by hand.** Open `http://<nas-ip>:6080/vnc.html`, click Connect, enter the VNC password, and log in to LinkedIn in the Chrome window, including any 2-step code. LinkedIn may email you about a new sign-in; that is expected once.
 
@@ -59,13 +68,13 @@ Outreach (visits, invites, messages) comes in later phases. Nothing in phase 0 a
 
 Use a Cloudflare Tunnel so no ports are opened on your router.
 
-1. In Cloudflare Zero Trust, create a tunnel and copy its token into `CF_TUNNEL_TOKEN` in `.env`.
+1. In Cloudflare Zero Trust, create a tunnel and store its token as `CF_TUNNEL_TOKEN` in Infisical (or `.env`).
 2. Add two public hostnames on the tunnel: `linkedauto.<your-domain>` to `http://app:3000`, and `browser.<your-domain>` to `http://runner:6080`.
 3. Add a Cloudflare Access application covering both hostnames that allows only your email.
-4. Set `NOVNC_PUBLIC_URL=https://browser.<your-domain>/vnc.html` in `.env`, then:
+4. Set `NOVNC_PUBLIC_URL=https://browser.<your-domain>/vnc.html` in `config/linkedauto.env`, then:
 
    ```sh
-   sudo docker compose --profile tunnel up -d
+   infisical run -- sudo -E docker compose --env-file ../config/linkedauto.env --profile tunnel up -d
    ```
 
 ## Safety rules built in
