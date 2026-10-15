@@ -12,14 +12,14 @@ const WARNING_PATTERNS = [
   ['checkpoint', /unusual activity/i],
 ];
 
-export function classifyUrl(rawUrl) {
+export function classifyUrl(rawUrl, extraHost = null) {
   let url;
   try {
     url = new URL(rawUrl);
   } catch {
     return 'unknown';
   }
-  if (!/(^|\.)linkedin\.com$/.test(url.hostname)) return 'unknown';
+  if (!/(^|\.)linkedin\.com$/.test(url.hostname) && url.host !== extraHost) return 'unknown';
   const path = url.pathname;
   if (path.startsWith('/checkpoint/') && !path.startsWith('/checkpoint/lg/')) return 'checkpoint';
   if (LOGGED_OUT_PATHS.some((re) => re.test(path))) return 'logged_out';

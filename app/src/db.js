@@ -26,6 +26,68 @@ const MIGRATIONS = [
      detail text
    )`,
   `CREATE INDEX events_at ON events (at DESC)`,
+  // Phase 1-4: campaigns, leads, imports and the action log.
+  `CREATE TABLE campaigns (
+     id serial PRIMARY KEY,
+     name text NOT NULL,
+     active boolean NOT NULL DEFAULT false,
+     visit_first boolean NOT NULL DEFAULT true,
+     invite_note text NOT NULL DEFAULT '',
+     first_message text NOT NULL DEFAULT '',
+     followups jsonb NOT NULL DEFAULT '[]',
+     created_at timestamptz NOT NULL DEFAULT now()
+   )`,
+  `CREATE TABLE leads (
+     id serial PRIMARY KEY,
+     profile_url text NOT NULL UNIQUE,
+     full_name text,
+     first_name text,
+     headline text,
+     location text,
+     company text,
+     tags text[] NOT NULL DEFAULT '{}',
+     source text,
+     campaign_id int REFERENCES campaigns(id) ON DELETE SET NULL,
+     status text NOT NULL DEFAULT 'new',
+     msg_step int NOT NULL DEFAULT 0,
+     invite_variant int,
+     message_variant int,
+     next_action_at timestamptz NOT NULL DEFAULT now(),
+     invited_at timestamptz,
+     accepted_at timestamptz,
+     last_message_at timestamptz,
+     replied_at timestamptz,
+     error text,
+     created_at timestamptz NOT NULL DEFAULT now(),
+     updated_at timestamptz NOT NULL DEFAULT now()
+   )`,
+  `CREATE INDEX leads_due ON leads (status, next_action_at)`,
+  `CREATE TABLE imports (
+     id serial PRIMARY KEY,
+     search_url text NOT NULL,
+     campaign_id int REFERENCES campaigns(id) ON DELETE SET NULL,
+     tags text[] NOT NULL DEFAULT '{}',
+     max_pages int NOT NULL DEFAULT 3,
+     next_page int NOT NULL DEFAULT 1,
+     status text NOT NULL DEFAULT 'queued',
+     found int NOT NULL DEFAULT 0,
+     added int NOT NULL DEFAULT 0,
+     error text,
+     created_at timestamptz NOT NULL DEFAULT now()
+   )`,
+  `CREATE TABLE actions (
+     id bigserial PRIMARY KEY,
+     at timestamptz NOT NULL DEFAULT now(),
+     finished_at timestamptz,
+     type text NOT NULL,
+     lead_id int REFERENCES leads(id) ON DELETE SET NULL,
+     import_id int REFERENCES imports(id) ON DELETE SET NULL,
+     payload jsonb NOT NULL DEFAULT '{}',
+     result text,
+     detail text,
+     dry_run boolean NOT NULL DEFAULT false
+   )`,
+  `CREATE INDEX actions_type_at ON actions (type, at DESC)`,
 ];
 
 export async function migrate() {
